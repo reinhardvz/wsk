@@ -85,9 +85,6 @@ DriverEntry(
     DriverObject->DriverUnload = WskudpUnload;
 
 	status = WSKStartup();
-	
-
-    // Create the listening socket
 
     g_UdpSocket = CreateSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, WSK_FLAG_DATAGRAM_SOCKET);
     if (g_UdpSocket == NULL) {
