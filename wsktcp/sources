@@ -1,0 +1,20 @@
+TARGETNAME=wsktcp
+TARGETTYPE=DRIVER
+
+MSC_WARNING_LEVEL=/W3 /WX
+
+INCLUDES=\
+
+TARGETLIBS=\
+	$(DDK_LIB_PATH)\ntoskrnl.lib \
+    $(DDK_LIB_PATH)\netio.lib \
+    $(SDK_LIB_PATH)\uuid.lib
+
+SOURCES=				\
+    		wsktcp.c 	\
+    		Simplewsk.c	\
+    		wsktcp.rc
+
+RUN_WPP= $(SOURCES) -km
+
+
