@@ -12,6 +12,7 @@ Author:
 
     MaD, 12-May-2009
 
+git test
 --*/
 
 #include "simplewsk.h"
