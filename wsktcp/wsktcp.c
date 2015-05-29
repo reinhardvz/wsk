@@ -46,8 +46,16 @@ Revision History:
 // Default length for data buffers used in send and receive operations
 
 static PWSK_SOCKET              g_TcpSocket = NULL;
+PETHREAD gEThread = NULL;
+SOCKADDR_IN 	LocalAddress = { 0, };
+SOCKADDR_IN 	RemoteAddress = { 0, };
 
-#define LOG_PORT     			3000
+LONG    		BufferSize = 0;
+ULONG			ByteCount = 0;
+CHAR    		GreetMessage[] = "Hello WSK TCP Client \r\n";
+BOOLEAN			bStopThread = FALSE;
+
+#define LOG_PORT     			4000
 
 #define HTON_SHORT(n) (((((unsigned short)(n) & 0xFFu  )) << 8) | \
 					(((unsigned short)(n) & 0xFF00u) >> 8))
@@ -55,10 +63,22 @@ static PWSK_SOCKET              g_TcpSocket = NULL;
 #define HTON_LONG(x)	(((((x)& 0xff)<<24) | ((x)>>24) & 0xff) | \
 					(((x) & 0xff0000)>>8) | (((x) & 0xff00)<<8))
 
+NTSTATUS
+AsyncSendComplete(
+		PDEVICE_OBJECT DeviceObject,
+		PIRP Irp,
+		PVOID Context
+);
+
 VOID
 WsktcpUnload(
     __in PDRIVER_OBJECT DriverObject
     );
+
+VOID
+TcpSendWorker(
+__in PVOID Context
+);
 
 // Driver entry routine
 NTSTATUS
@@ -68,12 +88,8 @@ DriverEntry(
     )
 {
     NTSTATUS 		status = STATUS_SUCCESS;
-	SOCKADDR_IN 	LocalAddress = {0,};
-	SOCKADDR_IN 	RemoteAddress = {0,};
 	
-    LONG    		BufferSize = 0;
-    CHAR    		GreetMessage[] = "Hello WSK TCP Client \r\n";
-
+	HANDLE			hThread = NULL;
     UNREFERENCED_PARAMETER(RegistryPath);
 
     PAGED_CODE();
@@ -82,42 +98,22 @@ DriverEntry(
 
 	status = WSKStartup();
 
-    g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
-    if (g_TcpSocket == NULL) {
-        DbgPrint("DriverEntry(): CreateSocket() returned NULL\n");
-		return (status = STATUS_UNSUCCESSFUL);
-    }
-
-    LocalAddress.sin_family = AF_INET;
-    LocalAddress.sin_addr.s_addr = INADDR_ANY;
-    //LocalAddress.sin_port = INADDR_PORT;
-	
-	// Bind Required
-	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
+    status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, NULL, NULL, NULL, TcpSendWorker, NULL);
 	if (!NT_SUCCESS(status)) {
-		DbgPrint("Bind() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
-		return status;
-	}
-	
-	RemoteAddress.sin_family = AF_INET;
-    RemoteAddress.sin_addr.s_addr = HTON_LONG(INADDR_LOOPBACK);
-    RemoteAddress.sin_port = HTON_SHORT(LOG_PORT);
-
-	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
-	if (!NT_SUCCESS(status)) {
-		DbgPrint("Connect() failed with status 0x%08X\n", status);
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "thread Create failed with status 0x%08X\n", status);
 		CloseSocket(g_TcpSocket);
 		return status;
 	}
 
-    if (Send(g_TcpSocket, GreetMessage, sizeof(GreetMessage)-1, WSK_FLAG_NODELAY) == sizeof(GreetMessage)-1) {
-	} else {
-		
+	status = ObReferenceObjectByHandle(hThread, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID*)&gEThread, NULL);
+	if (NT_SUCCESS(status) == FALSE) {
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "ObReferenceObjectByHandle failed with status 0x%08X\n", status);
+		CloseSocket(g_TcpSocket);
+		return status;
 	}
+	ZwClose(hThread);
 
-	CloseSocket(g_TcpSocket);
-		
+	
     // Initialize software tracing
     WPP_INIT_TRACING(DriverObject, RegistryPath);
     
@@ -126,23 +122,197 @@ DriverEntry(
     return status;
 }
 
+#define ASYNC_SEND_TEST		1
+#define CONNECT_SEND_TEST	0
+ULONG ltest1 = 0;
+ULONG ltest2 = 0;
+
+VOID
+TcpSendWorker(
+__in PVOID Context
+)
+{
+	NTSTATUS		status = STATUS_SUCCESS;
+	LARGE_INTEGER	interval;
+	WSK_BUF         WskBuffer = { 0 };
+
+	RemoteAddress.sin_family = AF_INET;
+	//RemoteAddress.sin_addr.s_addr = HTON_LONG(INADDR_LOOPBACK);
+	RemoteAddress.sin_addr.s_addr = HTON_LONG(0x0a0a00e8); //10.10.0.232 test
+	RemoteAddress.sin_port = HTON_SHORT(LOG_PORT); //4000
+		
+#if CONNECT_SEND_TEST
+	while (!bStopThread) {
+		
+		interval.QuadPart = (-1 * 1000 * 100);   // wait 10ms relative
+
+		KeDelayExecutionThread(KernelMode, TRUE, &interval);
+
+		g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
+		if (g_TcpSocket == NULL) {
+			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
+			break;
+		}
+
+		LocalAddress.sin_family = AF_INET;
+		LocalAddress.sin_addr.s_addr = INADDR_ANY;
+
+		// Bind Required
+		status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
+		if (!NT_SUCCESS(status)) {
+			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
+			CloseSocket(g_TcpSocket);
+			break;
+		}
+
+		status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
+		if (!NT_SUCCESS(status)) {
+			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
+			CloseSocket(g_TcpSocket);
+			break;
+		}
+
+		if (Send(g_TcpSocket, GreetMessage, sizeof(GreetMessage) - 1, WSK_FLAG_NODELAY) == (sizeof(GreetMessage) - 1)) {
+			//DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send ok\n ");
+		} else {
+			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send error happend\n ");
+		}
+
+		//status = DisConnect(g_TcpSocket);
+		//if (!NT_SUCCESS(status)) {
+		//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
+		//	CloseSocket(g_TcpSocket);
+		//	break;
+		//}
+
+		CloseSocket(g_TcpSocket);
+	}
+#endif
+#if ASYNC_SEND_TEST
+	g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
+	if (g_TcpSocket == NULL) {
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
+		PsTerminateSystemThread(STATUS_SUCCESS);
+		return;
+	}
+
+	LocalAddress.sin_family = AF_INET;
+	LocalAddress.sin_addr.s_addr = INADDR_ANY;
+
+	// Bind Required
+	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
+	if (!NT_SUCCESS(status)) {
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
+		CloseSocket(g_TcpSocket);
+		PsTerminateSystemThread(STATUS_SUCCESS);
+		return;
+	}
+
+	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
+	if (!NT_SUCCESS(status)) {
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
+		CloseSocket(g_TcpSocket);
+		PsTerminateSystemThread(STATUS_SUCCESS);
+		return;
+	}
+	
+	
+	InitWskBuffer(GreetMessage, sizeof(GreetMessage) - 1, &WskBuffer);
+
+	while (!bStopThread) {
+		PIRP			Irp;
+		
+		
+		interval.QuadPart = (-1 * 1000 * 1000 * 10);   // wait 1 sec relative
+
+		KeDelayExecutionThread(KernelMode, TRUE, &interval);
+		// Allocate an IRP
+		Irp = IoAllocateIrp( 1, FALSE );
+		// Check result
+		if (!Irp) {
+			CloseSocket(g_TcpSocket);
+			PsTerminateSystemThread(STATUS_SUCCESS);
+			return;
+		}
+		
+		// Set the completion routine for the IRP
+		IoSetCompletionRoutine(Irp, AsyncSendComplete , &WskBuffer, TRUE, TRUE, TRUE);
+
+		//g_TcpSocket->Dispatch->WskSend(g_TcpSocket, WskBuffer, 0, Irp);
+		((PWSK_PROVIDER_CONNECTION_DISPATCH)g_TcpSocket->Dispatch)->WskSend(g_TcpSocket, &WskBuffer, 0, Irp);
+		
+	}
+
+	CloseSocket(g_TcpSocket);
+
+#endif
+	
+
+	PsTerminateSystemThread(STATUS_SUCCESS);
+
+	return;
+}
+
+NTSTATUS
+AsyncSendComplete(
+	PDEVICE_OBJECT DeviceObject,
+	PIRP Irp,
+	PVOID Context
+)
+{
+	
+	PWSK_BUF pDataBuffer = NULL;
+
+	UNREFERENCED_PARAMETER(DeviceObject);
+
+	// Check the result of the send operation
+	if (Irp->IoStatus.Status == STATUS_SUCCESS)	{
+		// Get the pointer to the data buffer
+		pDataBuffer = (PWSK_BUF)Context;
+		// Get the number of bytes sent
+		ByteCount = (ULONG)(Irp->IoStatus.Information);
+
+		// Re-use or free the data buffer
+	} else { 	// Error status
+		// Handle error
+	}
+
+	//FreeWskBuffer(pDataBuffer);
+
+	// Free the IRP
+	IoFreeIrp(Irp);
+
+	// Always return STATUS_MORE_PROCESSING_REQUIRED to
+	// terminate the completion processing of the IRP.
+	return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+
 // Driver unload routine
 VOID
 WsktcpUnload(
-    __in PDRIVER_OBJECT DriverObject
-    )
-{  
-    
-    UNREFERENCED_PARAMETER(DriverObject);
+__in PDRIVER_OBJECT DriverObject
+)
+{
 
-    PAGED_CODE();
+	UNREFERENCED_PARAMETER(DriverObject);
 
-    DoTraceMessage(TRCINFO, "UNLOAD START");
+	PAGED_CODE();
+
+	DoTraceMessage(TRCINFO, "UNLOAD START");
+
+	bStopThread = TRUE;
+
+	KeWaitForSingleObject(gEThread,
+		Executive,
+		KernelMode,
+		FALSE,
+		NULL);        //wait for terminate thread....  
+	ObDereferenceObject(gEThread);
 
 	WSKCleanup();
-	
-    DoTraceMessage(TRCINFO, "UNLOAD END");
 
-    WPP_CLEANUP(DriverObject);
+	DoTraceMessage(TRCINFO, "UNLOAD END");
+
+	WPP_CLEANUP(DriverObject);
 }
-

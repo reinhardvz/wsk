@@ -54,6 +54,7 @@ NTAPI
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
+
 static
 NTSTATUS
 InitWskData(
@@ -75,7 +76,8 @@ InitWskData(
     return STATUS_SUCCESS;
 }
 
-static
+
+
 NTSTATUS
 InitWskBuffer(
     __in  PVOID             Buffer,
@@ -110,7 +112,7 @@ InitWskBuffer(
     return Status;
 }
 
-static
+
 VOID
 FreeWskBuffer(
     __in PWSK_BUF WskBuffer
@@ -331,6 +333,38 @@ SocketConnect(
     return WskSocket;
 }
 
+NTSTATUS
+NTAPI
+DisConnect(
+	PWSK_SOCKET	WskSocket
+)
+{
+	KEVENT          CompletionEvent = { 0 };
+	PIRP            Irp = NULL;
+	NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+
+	if (WskSocket == NULL) {
+		return Status;
+	}
+	Status = InitWskData(&Irp, &CompletionEvent);
+	if (!NT_SUCCESS(Status)) {
+		KdPrint(("Connect(): InitWskData() failed with status 0x%08X\n", Status));
+		return Status;
+	}
+	Status = ((PWSK_PROVIDER_CONNECTION_DISPATCH)WskSocket->Dispatch)->WskDisconnect(
+		WskSocket,
+		NULL,
+		0,
+		Irp);
+	if (Status == STATUS_PENDING) {
+		KeWaitForSingleObject(&CompletionEvent, Executive, KernelMode, FALSE, NULL);
+		Status = Irp->IoStatus.Status;
+	}
+
+	IoFreeIrp(Irp);
+	return Status;
+
+}
 
 LONG
 NTAPI

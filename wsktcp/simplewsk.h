@@ -45,6 +45,12 @@ SocketConnect(
         __in PSOCKADDR  LocalAddress
         );
 
+NTSTATUS
+NTAPI
+DisConnect(
+		__in PWSK_SOCKET	pWskSocket
+);
+
 LONG
 NTAPI
 Send(
@@ -97,3 +103,15 @@ Accept(
         __out_opt PSOCKADDR     RemoteAddress
    );
 
+
+NTSTATUS
+InitWskBuffer(
+__in  PVOID             Buffer,
+__in  ULONG             BufferSize,
+__out PWSK_BUF  WskBuffer
+);
+
+VOID
+FreeWskBuffer(
+__in PWSK_BUF WskBuffer
+);
