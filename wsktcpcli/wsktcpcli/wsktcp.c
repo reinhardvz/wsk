@@ -47,6 +47,7 @@ ULONG			ByteCount = 0;
 CHAR    		GreetMessage[10] = "hello WSK";
 CHAR*    		pRxBuf = NULL;
 BOOLEAN			bStopThread = FALSE;
+BOOLEAN			bThreadExitDone = FALSE;
 
 #define SRV_PORT     			40007
 
@@ -92,10 +93,16 @@ DriverEntry(
 	pRxBuf = (CHAR*)ExAllocatePoolWithTag(NonPagedPool, 10, 'dddd');
 
 	status = WSKStartup();
+	if (!NT_SUCCESS(status)) {
+		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "WSKStartup failed with status 0x%08X\n", status);
+		ExFreePool(pRxBuf);
+		return status;
+	}
 
     status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, NULL, NULL, NULL, TcpSendWorker, NULL);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "thread Create failed with status 0x%08X\n", status);
+		ExFreePool(pRxBuf);
 		CloseSocket(g_TcpSocket);
 		return status;
 	}
@@ -103,6 +110,7 @@ DriverEntry(
 	status = ObReferenceObjectByHandle(hThread, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID*)&gEThread, NULL);
 	if (NT_SUCCESS(status) == FALSE) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "ObReferenceObjectByHandle failed with status 0x%08X\n", status);
+		ExFreePool(pRxBuf);
 		CloseSocket(g_TcpSocket);
 		return status;
 	}
@@ -134,8 +142,7 @@ __in PVOID Context
 	g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
 	if (g_TcpSocket == NULL) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	LocalAddress.sin_family = AF_INET;
@@ -145,15 +152,13 @@ __in PVOID Context
 	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	while (!bStopThread) {
@@ -191,8 +196,7 @@ __in PVOID Context
 	g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
 	if (g_TcpSocket == NULL) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	LocalAddress.sin_family = AF_INET;
@@ -203,16 +207,14 @@ __in PVOID Context
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
 		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
 		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 	
 	
@@ -230,8 +232,7 @@ __in PVOID Context
 		// Check result
 		if (!Irp) {
 			CloseSocket(g_TcpSocket);
-			PsTerminateSystemThread(STATUS_SUCCESS);
-			return;
+			goto $EXIT;
 		}
 		
 		// Set the completion routine for the IRP
@@ -246,9 +247,9 @@ __in PVOID Context
 
 #endif
 
-
+$EXIT:	
+	bThreadExitDone = TRUE;
 	PsTerminateSystemThread(STATUS_SUCCESS);
-
 	return;
 }
 
@@ -298,17 +299,22 @@ __in PDRIVER_OBJECT DriverObject
 
 	PAGED_CODE();
 
-	bStopThread = TRUE;
-
-	KeWaitForSingleObject(gEThread,
-		Executive,
-		KernelMode,
-		FALSE,
-		NULL);        //wait for terminate thread....  
-	ObDereferenceObject(gEThread);
-
 	WSKCleanup();
 
+	if (!bThreadExitDone) {
+		bStopThread = TRUE;
+
+		KeWaitForSingleObject(gEThread,
+			Executive,
+			KernelMode,
+			FALSE,
+			NULL);        //wait for terminate thread....  
+
+	}
+
+	ObDereferenceObject(gEThread);
+	
 	ExFreePool(pRxBuf);
+	
 
 }

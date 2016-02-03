@@ -154,7 +154,7 @@ NTSTATUS NTAPI WSKStartup()
         InterlockedExchange(&g_SocketsState, DEINITIALIZED);
         return Status;
 	}
-
+	
 	InterlockedExchange(&g_SocketsState, INITIALIZED);
 	return STATUS_SUCCESS;
 }
@@ -168,7 +168,7 @@ VOID NTAPI WSKCleanup()
     if (InterlockedCompareExchange(&g_SocketsState, INITIALIZED, DEINITIALIZING) != INITIALIZED)
         return;
 
-    WskReleaseProviderNPI(&g_WskRegistration);
+	WskReleaseProviderNPI(&g_WskRegistration);
     WskDeregister(&g_WskRegistration);
 
     InterlockedExchange(&g_SocketsState, DEINITIALIZED);
