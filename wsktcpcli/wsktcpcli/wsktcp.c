@@ -3,12 +3,12 @@
 
 Module Name:
 
-    Wskudp.c
+    wsktcp.c
 
 Author:
 	reinhard v.z. 	
 	
-	http://zpacket.blogspot.kr/
+	https://github.com/reinhardvz
 
 Environment:
 
@@ -47,7 +47,7 @@ ULONG			ByteCount = 0;
 CHAR    		GreetMessage[10] = "hello WSK";
 CHAR*    		pRxBuf = NULL;
 BOOLEAN			bStopThread = FALSE;
-BOOLEAN			bThreadExitDone = FALSE;
+
 
 #define SRV_PORT     			40007
 
@@ -135,7 +135,7 @@ __in PVOID Context
 	LARGE_INTEGER	interval;
 	RemoteAddress.sin_family = AF_INET;
 	//RemoteAddress.sin_addr.s_addr = HTON_LONG(INADDR_LOOPBACK);
-	RemoteAddress.sin_addr.s_addr = HTON_LONG(0x0a0a00e8); //10.10.0.232 test
+	RemoteAddress.sin_addr.s_addr = HTON_LONG(0x0a0a00f6); //10.10.0.232 test
 	RemoteAddress.sin_port = HTON_SHORT(SRV_PORT); //40007
 		
 #if CONNECT_SEND_TEST
@@ -167,10 +167,11 @@ __in PVOID Context
 
 		KeDelayExecutionThread(KernelMode, TRUE, &interval);
 
-		if (Send(g_TcpSocket, GreetMessage, 10, WSK_FLAG_NODELAY) == (sizeof(GreetMessage) - 1)) {
+		if (Send(g_TcpSocket, GreetMessage, 10, WSK_FLAG_NODELAY) == sizeof(GreetMessage)) {
 			//DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send ok\n ");
 		} else {
 			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send error happend\n ");
+			goto $EXIT;
 		}
 
 		if (Receive(g_TcpSocket, pRxBuf, 10, 0)) {
@@ -178,18 +179,11 @@ __in PVOID Context
 		}
 		else {
 			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Receive fail\n ");
+			goto $EXIT;
 		}
 
-		//status = DisConnect(g_TcpSocket);
-		//if (!NT_SUCCESS(status)) {
-		//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
-		//	CloseSocket(g_TcpSocket);
-		//	break;
-		//}
 	}
-
-	CloseSocket(g_TcpSocket);
-
+	
 #endif
 
 #if ASYNC_SEND_TEST
@@ -206,14 +200,12 @@ __in PVOID Context
 	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
 		goto $EXIT;
 	}
 
 	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
 		goto $EXIT;
 	}
 	
@@ -231,7 +223,6 @@ __in PVOID Context
 		Irp = IoAllocateIrp( 1, FALSE );
 		// Check result
 		if (!Irp) {
-			CloseSocket(g_TcpSocket);
 			goto $EXIT;
 		}
 		
@@ -243,12 +234,14 @@ __in PVOID Context
 		
 	}
 
-	CloseSocket(g_TcpSocket);
-
 #endif
 
 $EXIT:	
-	bThreadExitDone = TRUE;
+	if (g_TcpSocket) {
+		CloseSocket(g_TcpSocket);
+		g_TcpSocket = NULL;
+	}
+	
 	PsTerminateSystemThread(STATUS_SUCCESS);
 	return;
 }
@@ -299,21 +292,30 @@ __in PDRIVER_OBJECT DriverObject
 
 	PAGED_CODE();
 
-	WSKCleanup();
+	//status = DisConnect(g_TcpSocket);
+	//if (!NT_SUCCESS(status)) {
+	//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
+	//}
 
-	if (!bThreadExitDone) {
-		bStopThread = TRUE;
-
-		KeWaitForSingleObject(gEThread,
-			Executive,
-			KernelMode,
-			FALSE,
-			NULL);        //wait for terminate thread....  
-
+	if (g_TcpSocket) {
+		CloseSocket(g_TcpSocket);
+		g_TcpSocket = NULL;
 	}
+	
+	bStopThread = TRUE;
+
+	KeWaitForSingleObject(gEThread,
+		Executive,
+		KernelMode,
+		FALSE,
+		NULL);        //wait for terminate thread....  
+
+	
 
 	ObDereferenceObject(gEThread);
 	
+	WSKCleanup();
+
 	ExFreePool(pRxBuf);
 	
 

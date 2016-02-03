@@ -3,12 +3,12 @@
 
 Module Name:
 
-    Wskudp.c
+    wsktcp.c
 
 Author:
 	reinhard v.z. 	
 	
-	http://zpacket.blogspot.kr/
+	https://github.com/reinhardvz
 
 Environment:
 
@@ -39,6 +39,7 @@ Revision History:
 // Default length for data buffers used in send and receive operations
 
 static PWSK_SOCKET              g_TcpSocket = NULL;
+WSK_SOCKET* paccept_socket = NULL;
 PETHREAD gEThread = NULL;
 SOCKADDR_IN 	LocalAddress = { 0, };
 SOCKADDR_IN 	RemoteAddress = { 0, };
@@ -56,6 +57,8 @@ BOOLEAN			bStopThread = FALSE;
 
 #define HTON_LONG(x)	(((((x)& 0xff)<<24) | ((x)>>24) & 0xff) | \
 					(((x) & 0xff0000)>>8) | (((x) & 0xff00)<<8))
+
+BOOLEAN			bThreadExitDone = FALSE;
 
 NTSTATUS
 AsyncSendComplete(
@@ -125,9 +128,7 @@ __in PVOID Context
 	UNREFERENCED_PARAMETER(Context);
 
 	NTSTATUS		status = STATUS_SUCCESS;
-	LARGE_INTEGER	interval;
-	WSK_SOCKET* paccept_socket = NULL;
-
+	
 	RemoteAddress.sin_family = AF_INET;
 	//RemoteAddress.sin_addr.s_addr = HTON_LONG(INADDR_LOOPBACK);
 	RemoteAddress.sin_addr.s_addr = 0;// HTON_LONG(0x0a0a00e8); //10.10.0.232 test
@@ -137,8 +138,7 @@ __in PVOID Context
 	g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_LISTEN_SOCKET);
 	if (g_TcpSocket == NULL) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	LocalAddress.sin_family = AF_INET;
@@ -149,49 +149,36 @@ __in PVOID Context
 	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 	
 	paccept_socket = Accept(g_TcpSocket, (PSOCKADDR)&LocalAddress, (PSOCKADDR)&RemoteAddress);
-
+	if (paccept_socket == NULL) {
+		goto $EXIT;
+	}
 	status = GetRemoteAddress(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
 	if (status != STATUS_SUCCESS) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "GetRemoteAddress() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	while (!bStopThread) {
-		
-		interval.QuadPart = (-1 * 1000 * 10000);   // wait 1000ms relative
-
-		KeDelayExecutionThread(KernelMode, TRUE, &interval);
-
-		if (Send(g_TcpSocket, ServerMessage, 10, WSK_FLAG_NODELAY) == 10) {
-			//DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send ok\n ");
-		} else {
-			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send error happend\n ");
-		}
-
-		if (Receive(g_TcpSocket, pRxBuf, 10, 0)) {
-
+	
+		if (Receive(paccept_socket, pRxBuf, 10, 0)) {
+			if (Send(paccept_socket, ServerMessage, 10, WSK_FLAG_NODELAY) == sizeof(ServerMessage)) {
+				//DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send ok\n ");
+			}
+			else {
+				DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "send error happend\n ");
+				goto $EXIT;
+			}
 		}
 		else {
 			DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Receive fail\n ");
+			goto $EXIT;
 		}
 
-		//status = DisConnect(g_TcpSocket);
-		//if (!NT_SUCCESS(status)) {
-		//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
-		//	CloseSocket(g_TcpSocket);
-		//	break;
-		//}
 	}
-
-	CloseSocket(g_TcpSocket);
 
 #endif
 
@@ -199,8 +186,7 @@ __in PVOID Context
 	g_TcpSocket = CreateSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, WSK_FLAG_CONNECTION_SOCKET);
 	if (g_TcpSocket == NULL) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "CreateSocket() returned NULL\n");
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	LocalAddress.sin_family = AF_INET;
@@ -210,17 +196,13 @@ __in PVOID Context
 	status = Bind(g_TcpSocket, (PSOCKADDR)&LocalAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Bind() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 
 	status = Connect(g_TcpSocket, (PSOCKADDR)&RemoteAddress);
 	if (!NT_SUCCESS(status)) {
 		DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "Connect() failed with status 0x%08X\n", status);
-		CloseSocket(g_TcpSocket);
-		PsTerminateSystemThread(STATUS_SUCCESS);
-		return;
+		goto $EXIT;
 	}
 	
 	
@@ -237,9 +219,7 @@ __in PVOID Context
 		Irp = IoAllocateIrp( 1, FALSE );
 		// Check result
 		if (!Irp) {
-			CloseSocket(g_TcpSocket);
-			PsTerminateSystemThread(STATUS_SUCCESS);
-			return;
+			goto $EXIT;
 		}
 		
 		// Set the completion routine for the IRP
@@ -250,10 +230,20 @@ __in PVOID Context
 		
 	}
 
-	CloseSocket(g_TcpSocket);
+	
 
 #endif
 
+$EXIT:
+
+	if (g_TcpSocket) {
+		CloseSocket(g_TcpSocket);
+		g_TcpSocket = NULL;
+	}
+	if (paccept_socket) {
+		CloseSocket(paccept_socket);
+		paccept_socket = NULL;
+	}
 
 	PsTerminateSystemThread(STATUS_SUCCESS);
 
@@ -305,6 +295,25 @@ __in PDRIVER_OBJECT DriverObject
 	UNREFERENCED_PARAMETER(DriverObject);
 
 	PAGED_CODE();
+
+
+	//status = DisConnect(g_TcpSocket);
+	//if (!NT_SUCCESS(status)) {
+	//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
+	//}
+	//status = DisConnect(paccept_socket);
+	//if (!NT_SUCCESS(status)) {
+	//	DbgPrintEx(DPFLTR_IHVNETWORK_ID, 0xFFFFFFFF, "DisConnect() failed with status 0x%08X\n", status);
+	//}
+
+	if (g_TcpSocket) {
+		CloseSocket(g_TcpSocket);
+		g_TcpSocket = NULL;
+	}
+	if (paccept_socket) {
+		CloseSocket(paccept_socket);
+		paccept_socket = NULL;
+	}
 
 	bStopThread = TRUE;
 
